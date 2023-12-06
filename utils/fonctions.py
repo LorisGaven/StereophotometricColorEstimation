@@ -2,6 +2,8 @@ import cv2
 from scipy.signal import convolve2d
 import numpy as np
 from tqdm import tqdm
+from scipy.fft import dctn, idctn
+from scipy.sparse.linalg import svds
 
 def lightDirection(boule, rayon):
     # On suppose que boule est l'image avec seulement la boule et qu'elle est centrée
@@ -53,7 +55,7 @@ def lightsDirection(images, boule_position):
 
     return np.array(ls)
 
-def getI(images):
+def getI(images, corrige=False):
     nb_image = len(images)
     nb_pixel =  images[0].shape[0] * images[0].shape[1]
 
@@ -63,15 +65,19 @@ def getI(images):
         image = images[i]
         I[i,:] = image.flatten()
 
+    if corrige:
+        U, D, Vt = svds(I, k=3)
+        D = np.diag(D)
+        I = U @ D @ Vt
+
     return I
 
 def integrationSCS(p, q, gt=None):
     # Compute div(p,q)
-    px = 0.5 * (np.roll(p, -1, axis=0) - np.roll(p, 1, axis=0))
-    qy = 0.5 * (np.roll(q, -1, axis=1) - np.roll(q, 1, axis=1))
 
-    # Div(p,q) + Boundary Condition
-    f = px + qy
+    gradient_p, gradient_q = np.gradient(p), np.gradient(q)
+    f = gradient_p[0] + gradient_q[1]
+    
     f[0, 1:-1] = 0.5 * (p[0, 1:-1] + p[1, 1:-1])
     f[-1, 1:-1] = 0.5 * (-p[-1, 1:-1] - p[-2, 1:-1])
     f[1:-1, 0] = 0.5 * (q[1:-1, 0] + q[1:-1, 1])
@@ -84,15 +90,17 @@ def integrationSCS(p, q, gt=None):
 
     # Cosine Transform of f
     fsin = dctn(f, norm='ortho')
+    print(fsin.shape)
+    print(fsin)
 
     # Denominator
     x, y = np.meshgrid(np.arange(p.shape[1]), np.arange(p.shape[0]))
     denom = (2 * np.cos(np.pi * x / p.shape[1]) - 2) + (2 * np.cos(np.pi * y / p.shape[0]) - 2)
-    Z = fsin / denom
-    Z[0, 0] = 0.5 * (Z[0, 1] + Z[1, 0])  # Or whatever...
+    Z_ = fsin / denom
+    Z_[0, 0] = 0.5 * (Z_[0, 1] + Z_[1, 0])
 
     # Inverse Cosine Transform
-    U = idctn(Z, norm='ortho')
+    U = idctn(Z_, norm='ortho')
 
     if gt is not None:
         moyenne_ecarts = np.mean(U - gt)
@@ -103,3 +111,14 @@ def integrationSCS(p, q, gt=None):
     else:
         U -= np.min(U)
         return U
+
+def stereophotometrie(I,S,masque=None):
+    pseudo_inverse_S = np.linalg.pinv(S)
+    m = pseudo_inverse_S @ I
+
+
+    rho_estime = np.sqrt(np.sum(np.square(m), 0))
+    N_estime = m / (rho_estime + 1e-3)
+    N_estime[:, masque.flatten() == 0] = 0
+
+    return rho_estime, N_estime
